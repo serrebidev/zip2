@@ -177,6 +177,15 @@ impl<F> ExtractOptions<F> {
     }
 }
 
+/// The file mode from `stat` as a `mode_t`. `st_mode` is wider than `mode_t` on some targets:
+/// on 32-bit Android `st_mode` is `u32` and `mode_t` is `u16`, so `st_mode & libc::S_IFMT`
+/// and `fchmod(fd, st_mode)` do not compile there. Mode bits always fit in `mode_t`.
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)]
+fn file_mode(st: &libc::stat) -> libc::mode_t {
+    st.st_mode as libc::mode_t
+}
+
 #[cfg(unix)]
 fn cstr(c: &OsStr) -> std::io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
@@ -278,7 +287,7 @@ fn open_dir_beneath(
             if unsafe { libc::fstat(child_fd.as_raw_fd(), &mut st) } != 0 {
                 return Err(Error::last_os_error());
             }
-            let current_mode = st.st_mode & 0o7777;
+            let current_mode = file_mode(&st) & 0o7777;
             if current_mode & 0o700 != 0o700 {
                 let desired = current_mode | 0o700;
                 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -1039,7 +1048,7 @@ pub(crate) fn remove_outfile_beneath(
         {
             return Err(Error::last_os_error());
         }
-        if (entry_st.st_mode & libc::S_IFMT) != libc::S_IFREG
+        if (file_mode(&entry_st) & libc::S_IFMT) != libc::S_IFREG
             || entry_st.st_dev != open_st.st_dev
             || entry_st.st_ino != open_st.st_ino
         {
@@ -1198,7 +1207,7 @@ pub(crate) fn move_staged_file_beneath(
         {
             return Err(Error::last_os_error());
         }
-        if (from_st.st_mode & libc::S_IFMT) == libc::S_IFLNK {
+        if (file_mode(&from_st) & libc::S_IFMT) == libc::S_IFLNK {
             let target = std::fs::read_link(from)?;
             let target_c = cstr(target.as_os_str())?;
             let r_unlink = unsafe { libc::unlinkat(to_dirfd.as_raw_fd(), to_c.as_ptr(), 0) };
@@ -1232,7 +1241,7 @@ pub(crate) fn move_staged_file_beneath(
         if unsafe { libc::fstat(src_fd.as_raw_fd(), &mut src_st) } != 0 {
             return Err(Error::last_os_error());
         }
-        if (src_st.st_mode & libc::S_IFMT) != libc::S_IFREG {
+        if (file_mode(&src_st) & libc::S_IFMT) != libc::S_IFREG {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "Staged entry is not a regular file",
@@ -1409,7 +1418,7 @@ fn create_outfile_beneath(
             libc::AT_SYMLINK_NOFOLLOW,
         )
     } == 0
-        && ((pre_st.st_mode & libc::S_IFMT) == libc::S_IFLNK || pre_st.st_nlink > 1)
+        && ((file_mode(&pre_st) & libc::S_IFMT) == libc::S_IFLNK || pre_st.st_nlink > 1)
     {
         let r = unsafe { libc::unlinkat(dirfd.as_raw_fd(), name.as_ptr(), 0) };
         if r != 0 {
@@ -1449,7 +1458,7 @@ fn create_outfile_beneath(
     if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
         return Err(Error::last_os_error());
     }
-    if (st.st_mode & libc::S_IFMT) != libc::S_IFREG {
+    if (file_mode(&st) & libc::S_IFMT) != libc::S_IFREG {
         return Err(Error::new(
             ErrorKind::PermissionDenied,
             "Extracted file cannot be written to a non-regular file",
@@ -1723,11 +1732,11 @@ fn set_permissions_dirfd_entry(
         use std::io::ErrorKind;
         use std::os::fd::{FromRawFd, OwnedFd};
 
-        if (st.st_mode & libc::S_IFMT) == libc::S_IFLNK {
+        if (file_mode(&st) & libc::S_IFMT) == libc::S_IFLNK {
             return Ok(());
         }
 
-        let is_dir = (st.st_mode & libc::S_IFMT) == libc::S_IFDIR;
+        let is_dir = (file_mode(&st) & libc::S_IFMT) == libc::S_IFDIR;
         let base_flags = if is_dir {
             libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC
         } else {
@@ -1805,7 +1814,7 @@ fn set_permissions_dirfd_entry(
             if unsafe { libc::fstat(path_fd.as_raw_fd(), &mut fd_st) } != 0 {
                 return Err(Error::last_os_error());
             }
-            if (fd_st.st_mode & libc::S_IFMT) == libc::S_IFLNK {
+            if (file_mode(&fd_st) & libc::S_IFMT) == libc::S_IFLNK {
                 return Err(Error::new(
                     ErrorKind::PermissionDenied,
                     "Cannot set permissions through a symbolic link",
